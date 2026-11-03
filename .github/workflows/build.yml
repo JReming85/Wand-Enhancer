@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: read
+      contents: write  # Required for creating releases
 
     steps:
       - uses: actions/checkout@v5
@@ -52,3 +52,20 @@ jobs:
       - name: Verify opt-in update notifications build
         shell: pwsh
         run: ./build.ps1 -Configuration Release -EnableUpdateNotifications
+
+      - name: Rename executable with version
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $version = (Get-Item WandEnhancer/bin/Release/WandEnhancer.exe).VersionInfo.ProductVersion
+          $newName = "WandEnhancer-v$version.exe"
+          Rename-Item -Path WandEnhancer/bin/Release/WandEnhancer.exe -NewName $newName
+          echo "EXE_NAME=$newName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish to GitHub Releases
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: WandEnhancer/bin/Release/${{ env.EXE_NAME }}
+          tag_name: ${{ env.EXE_NAME }}
+          generate_release_notes: true
