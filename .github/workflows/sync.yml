@@ -1,0 +1,113 @@
+name: Sync with upstream and update build.yml
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/k1tbyte/Wand-Enhancer.git
+
+      - name: Fetch upstream
+        run: git fetch upstream master
+
+      - name: Merge upstream/master
+        run: git merge upstream/master --allow-unrelated-histories
+        continue-on-error: true
+
+      - name: Update build.yml
+        run: |
+          mkdir -p .github/workflows
+          cat > .github/workflows/build.yml << 'EOF'
+          name: Build executable
+
+          on:
+            workflow_dispatch:
+              inputs:
+                enable_update_notifications:
+                  description: Include GitHub release checks when Wand starts
+                  type: boolean
+                  required: false
+                  default: false
+            pull_request:
+            push:
+              branches: [master]
+
+          jobs:
+            build:
+              runs-on: windows-latest
+              permissions:
+                contents: write
+
+              steps:
+                - uses: actions/checkout@v5
+
+                - uses: pnpm/action-setup@v5
+                  with:
+                    version: 10.17.0
+
+                - uses: actions/setup-node@v5
+                  with:
+                    node-version: 22
+                    cache: pnpm
+                    cache-dependency-path: web-panel/pnpm-lock.yaml
+
+                - name: Build unsigned executable
+                  shell: pwsh
+                  run: |
+                    if ('${{ inputs.enable_update_notifications }}' -eq 'true') {
+                      ./build.ps1 -Configuration Release -EnableUpdateNotifications
+                    } else {
+                      ./build.ps1 -Configuration Release
+                    }
+
+                - name: Upload unsigned executable
+                  uses: actions/upload-artifact@v6
+                  with:
+                    name: WandEnhancer-unsigned
+                    path: WandEnhancer/bin/Release/WandEnhancer.exe
+                    if-no-files-found: error
+
+                - name: Verify opt-in update notifications build
+                  shell: pwsh
+                  run: ./build.ps1 -Configuration Release -EnableUpdateNotifications
+
+                - name: Rename executable with version
+                  if: github.event_name == 'push'
+                  shell: pwsh
+                  run: |
+                    $version = (Get-Item WandEnhancer/bin/Release/WandEnhancer.exe).VersionInfo.ProductVersion
+                    $newName = "WandEnhancer-v$version.exe"
+                    Rename-Item -Path WandEnhancer/bin/Release/WandEnhancer.exe -NewName $newName
+                    echo "EXE_NAME=$newName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+                - name: Publish to GitHub Releases
+                  if: github.event_name == 'push'
+                  uses: softprops/action-gh-release@v2
+                  with:
+                    files: WandEnhancer/bin/Release/${{ env.EXE_NAME }}
+                    tag_name: ${{ env.EXE_NAME }}
+                    generate_release_notes: true
+          EOF
+
+      - name: Commit and push changes
+        run: |
+          git add .github/workflows/build.yml
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: sync with upstream and update build.yml" && git push origin master)
